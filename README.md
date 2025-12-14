@@ -1,46 +1,81 @@
 # esp-idf-max6675
 
-Minimal MAX6675 thermocouple driver implemented as a reusable ESP-IDF component.
+Reusable MAX6675 thermocouple driver implemented as an ESP-IDF component.
 
-This component provides a simple C API to read temperature data from MAX6675
-thermocouple converters using the ESP-IDF spi_master driver.
+This repository provides a small, plain-C driver to read MAX6675 thermocouple
+converters using the ESP-IDF `spi_master` API.
+
+---
+
+## Overview
+
+This repository is **not a standalone application**.
+
+It is intended to be included as a component in ESP-IDF projects that need to
+read temperature data from MAX6675 modules.
 
 ---
 
 ## Features
 
 - MAX6675 thermocouple support
-- ESP-IDF spi_master based implementation
+- ESP-IDF `spi_master` based implementation
 - Read-only SPI device (no MOSI required)
+- Multi-SPI-host support (SPI2 / SPI3)
+- Backward-compatible API
 - Plain C interface
-- Suitable for reuse in multiple ESP-IDF projects
 
 ---
 
-## Usage
+## Project structure
 
-Copy this component into your ESP-IDF project:
+- `max6675.c`  
+  Driver implementation
 
-```text
-components/
-└─ max6675/
+- `include/max6675.h`  
+  Public API
+
+---
+
+## Getting started
+
+### 1. Prerequisites
+
+- ESP-IDF installed and working
+
+### 2. Add the component to your project
+
+Using git submodules (recommended):
+
+```bash
+git submodule add https://github.com/JuanPerez88/esp-idf-max6675 components/max6675
 ```
 
-Then include it in your application source code:
+Or clone with submodules:
 
-```text
-#include "max6675.h"
+```bash
+git clone --recurse-submodules <your-project-repo>
 ```
-And add it as a dependency in your main/CMakeLists.txt:
 
-```text
+### 3. Register the component
+
+In `main/CMakeLists.txt`:
+
+```cmake
 idf_component_register(
     SRCS "main.c"
     REQUIRES max6675
 )
 ```
+
+### 4. Use the API
+
+```bash
+#include "max6675.h"
+```
+
 ---
 
-License
+## License
 
 MIT License
