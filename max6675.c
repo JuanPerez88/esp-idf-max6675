@@ -1,5 +1,5 @@
 // max6675.c
-// ESP32 MAX6675 driver using ESP-IDF spi_master (up to 3 sensors per SPI host).
+// ESP32 MAX6675 driver using ESP-IDF spi_master.
 
 #include <math.h>
 #include <stdio.h>
@@ -9,22 +9,33 @@
 
 #include "max6675.h"
 
-#define MAX6675_SPI_HOST  SPI2_HOST      
 static const char *TAG = "MAX6675";
 
-static bool s_bus_inited = false;
-static int  s_clock_hz   = 1000000;     
+#define MAX_HOSTS 4
 
-esp_err_t max6675_bus_init(int pin_miso,
-                           int pin_mosi,
-                           int pin_sck,
-                           int clock_hz)
+static bool s_bus_inited[MAX_HOSTS] = { false };
+static int  s_clock_hz[MAX_HOSTS]   = { 0 };
+
+static inline int host_index(spi_host_device_t host)
 {
-    if (s_bus_inited) {
-        return ESP_OK;
+    return (int)host;
+}
+
+esp_err_t max6675_bus_init_host(spi_host_device_t host,
+                                int pin_miso,
+                                int pin_mosi,
+                                int pin_sck,
+                                int clock_hz)
+{
+    int idx = host_index(host);
+
+    if (idx < 0 || idx >= MAX_HOSTS) {
+        return ESP_ERR_INVALID_ARG;
     }
 
-    esp_err_t ret;
+    if (s_bus_inited[idx]) {
+        return ESP_OK;
+    }
 
     spi_bus_config_t buscfg = {
         .mosi_io_num = pin_mosi,
@@ -35,50 +46,76 @@ esp_err_t max6675_bus_init(int pin_miso,
         .max_transfer_sz = 16
     };
 
-    ret = spi_bus_initialize(MAX6675_SPI_HOST, &buscfg, SPI_DMA_CH_AUTO);
+    esp_err_t ret = spi_bus_initialize(host, &buscfg, SPI_DMA_CH_AUTO);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "spi_bus_initialize failed: %d", ret);
+        ESP_LOGE(TAG, "spi_bus_initialize failed (host=%d): %d", host, ret);
         return ret;
     }
 
-    s_clock_hz   = clock_hz;
-    s_bus_inited = true;
+    s_clock_hz[idx]   = clock_hz;
+    s_bus_inited[idx] = true;
 
     ESP_LOGI(TAG,
-             "SPI bus OK (MISO=%d, MOSI=%d, SCK=%d, CLK=%d Hz)",
-             pin_miso, pin_mosi, pin_sck, clock_hz);
+             "SPI bus OK (host=%d, MISO=%d, MOSI=%d, SCK=%d, CLK=%d Hz)",
+             host, pin_miso, pin_mosi, pin_sck, clock_hz);
 
     return ESP_OK;
+}
+
+esp_err_t max6675_add_sensor_host(spi_host_device_t host,
+                                  int pin_cs,
+                                  spi_device_handle_t *out_dev)
+{
+    int idx = host_index(host);
+
+    if (idx < 0 || idx >= MAX_HOSTS) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (!s_bus_inited[idx]) {
+        ESP_LOGE(TAG, "Bus not initialized for host=%d", host);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    spi_device_interface_config_t devcfg = {
+        .clock_speed_hz = s_clock_hz[idx],
+        .mode = 0,
+        .spics_io_num = pin_cs,
+        .queue_size = 1,
+    };
+
+    spi_device_handle_t dev;
+    esp_err_t ret = spi_bus_add_device(host, &devcfg, &dev);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG,
+                 "spi_bus_add_device failed (host=%d, CS=%d): %d",
+                 host, pin_cs, ret);
+        return ret;
+    }
+
+    *out_dev = dev;
+    ESP_LOGI(TAG, "MAX6675 sensor added (host=%d, CS=%d)", host, pin_cs);
+    return ESP_OK;
+}
+
+// Backward-compatible API (SPI2_HOST)
+
+esp_err_t max6675_bus_init(int pin_miso,
+                           int pin_mosi,
+                           int pin_sck,
+                           int clock_hz)
+{
+    return max6675_bus_init_host(SPI2_HOST,
+                                 pin_miso,
+                                 pin_mosi,
+                                 pin_sck,
+                                 clock_hz);
 }
 
 esp_err_t max6675_add_sensor(int pin_cs,
                              spi_device_handle_t *out_dev)
 {
-    if (!s_bus_inited) {
-        ESP_LOGE(TAG, "Bus not initialized. Call max6675_bus_init() first.");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    esp_err_t ret;
-
-    spi_device_interface_config_t devcfg = {
-        .clock_speed_hz = s_clock_hz,  
-        .mode = 0,                      
-        .spics_io_num = pin_cs,
-        .queue_size = 1,
-        .flags = 0,
-    };
-
-    spi_device_handle_t dev;
-    ret = spi_bus_add_device(MAX6675_SPI_HOST, &devcfg, &dev);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "spi_bus_add_device failed for CS=%d: %d", pin_cs, ret);
-        return ret;
-    }
-
-    *out_dev = dev;
-    ESP_LOGI(TAG, "MAX6675 sensor added on CS=%d", pin_cs);
-    return ESP_OK;
+    return max6675_add_sensor_host(SPI2_HOST, pin_cs, out_dev);
 }
 
 float max6675_read_celsius(spi_device_handle_t dev)
@@ -88,13 +125,12 @@ float max6675_read_celsius(spi_device_handle_t dev)
         return NAN;
     }
 
-    esp_err_t ret;
     spi_transaction_t t = {
         .flags = SPI_TRANS_USE_RXDATA,
-        .length = 16,  
+        .length = 16,
     };
 
-    ret = spi_device_transmit(dev, &t);
+    esp_err_t ret = spi_device_transmit(dev, &t);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "spi_device_transmit failed: %d", ret);
         return NAN;
@@ -103,11 +139,10 @@ float max6675_read_celsius(spi_device_handle_t dev)
     uint16_t raw = ((uint16_t)t.rx_data[0] << 8) | t.rx_data[1];
 
     if (raw & 0x0004) {
-        ESP_LOGW(TAG, "Thermocouple not connected (D2 bit set)");
+        ESP_LOGW(TAG, "Thermocouple not connected");
         return NAN;
     }
 
     raw >>= 3;
-    float temp_c = raw * 0.25f;
-    return temp_c;
+    return raw * 0.25f;
 }
