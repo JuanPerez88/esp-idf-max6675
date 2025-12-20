@@ -102,6 +102,13 @@ static esp_err_t read_raw(spi_device_handle_t dev,
 
     *raw = ((uint16_t)t.rx_data[0] << 8) | t.rx_data[1];
 
+    /* Sanity check: floating or invalid SPI data */
+    if (*raw == 0x0000 || *raw == 0xFFFF) {
+        if (status) *status = MAX6675_STATUS_SPI_ERROR;
+        return ESP_OK;
+    }
+
+    /* MAX6675 open thermocouple bit */
     if (*raw & 0x0004) {
         if (status) *status = MAX6675_STATUS_OPEN_THERMOCOUPLE;
     } else {
