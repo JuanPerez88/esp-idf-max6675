@@ -102,20 +102,37 @@ static esp_err_t read_raw(spi_device_handle_t dev,
 
     *raw = ((uint16_t)t.rx_data[0] << 8) | t.rx_data[1];
 
-    /* Sanity check: floating or invalid SPI data */
+    /* Basic floating-line detection */
     if (*raw == 0x0000 || *raw == 0xFFFF) {
         if (status) *status = MAX6675_STATUS_SPI_ERROR;
         return ESP_OK;
     }
 
-    /* MAX6675 open thermocouple bit */
-    if (*raw & 0x0004) {
-        if (status) *status = MAX6675_STATUS_OPEN_THERMOCOUPLE;
-    } else {
-        if (status) *status = MAX6675_STATUS_OK;
+    /* Bits 2..0 must be zero on MAX6675 */
+    if ((*raw & 0x0007) != 0x0000) {
+        if (status) *status = MAX6675_STATUS_SPI_ERROR;
+        return ESP_OK;
     }
 
+    /* Open thermocouple flag */
+    if (*raw & 0x0004) {
+        if (status) *status = MAX6675_STATUS_OPEN_THERMOCOUPLE;
+        return ESP_OK;
+    }
+
+    /* Decode temperature */
+    uint16_t temp_raw = *raw >> 3;
+    float temp_c = temp_raw * 0.25f;
+
+    /* Sanity temperature range check */
+    if (temp_c < -20.0f || temp_c > 1200.0f) {
+        if (status) *status = MAX6675_STATUS_SPI_ERROR;
+        return ESP_OK;
+    }
+
+    if (status) *status = MAX6675_STATUS_OK;
     return ESP_OK;
+   
 }
 
 /* =========================
