@@ -29,15 +29,21 @@ typedef enum {
  * Sensor object
  * ========================= */
 typedef struct {
+    /* SPI device */
     spi_device_handle_t dev;
 
+    /* Rate limit */
     int min_interval_ms;
     max6675_rate_limit_mode_t rl_mode;
 
+    /* Last valid measurement */
     float last_celsius;
     uint16_t last_raw;
     int64_t last_update_us;
     bool valid;
+
+    /* Last read status */
+    max6675_status_t last_status;
 } max6675_sensor_t;
 
 /* =========================

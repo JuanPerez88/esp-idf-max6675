@@ -80,6 +80,7 @@ esp_err_t max6675_add_sensor_host(spi_host_device_t host,
 /* =========================
  * INTERNAL RAW READ
  * ========================= */
+ 
 static esp_err_t read_raw(spi_device_handle_t dev,
                           uint16_t *raw,
                           max6675_status_t *status)
@@ -90,7 +91,7 @@ static esp_err_t read_raw(spi_device_handle_t dev,
     }
 
     spi_transaction_t t = {
-        .flags = SPI_TRANS_USE_RXDATA,
+        .flags  = SPI_TRANS_USE_RXDATA,
         .length = 16,
     };
 
@@ -102,19 +103,19 @@ static esp_err_t read_raw(spi_device_handle_t dev,
 
     *raw = ((uint16_t)t.rx_data[0] << 8) | t.rx_data[1];
 
-    /* Basic floating-line detection */
+    /* Floating-line / missing-device patterns */
     if (*raw == 0x0000 || *raw == 0xFFFF) {
         if (status) *status = MAX6675_STATUS_SPI_ERROR;
         return ESP_OK;
     }
 
-    /* Bits 2..0 must be zero on MAX6675 */
-    if ((*raw & 0x0007) != 0x0000) {
+    /* Bits 1..0 must be 0 (bit 2 is the TC-open flag, so do NOT include it) */
+    if ((*raw & 0x0003) != 0x0000) {
         if (status) *status = MAX6675_STATUS_SPI_ERROR;
         return ESP_OK;
     }
 
-    /* Open thermocouple flag */
+    /* Open thermocouple flag (D2) */
     if (*raw & 0x0004) {
         if (status) *status = MAX6675_STATUS_OPEN_THERMOCOUPLE;
         return ESP_OK;
@@ -122,9 +123,16 @@ static esp_err_t read_raw(spi_device_handle_t dev,
 
     /* Decode temperature */
     uint16_t temp_raw = *raw >> 3;
+
+    /* Many modules output max code when input is floating/open */
+    if (temp_raw == 0x0FFF) {
+        if (status) *status = MAX6675_STATUS_OPEN_THERMOCOUPLE;
+        return ESP_OK;
+    }
+
     float temp_c = temp_raw * 0.25f;
 
-    /* Sanity temperature range check */
+    /* Sanity range */
     if (temp_c < -20.0f || temp_c > 1200.0f) {
         if (status) *status = MAX6675_STATUS_SPI_ERROR;
         return ESP_OK;
@@ -132,8 +140,7 @@ static esp_err_t read_raw(spi_device_handle_t dev,
 
     if (status) *status = MAX6675_STATUS_OK;
     return ESP_OK;
-   
-}
+} 
 
 /* =========================
  * SENSOR API
@@ -152,6 +159,7 @@ esp_err_t max6675_sensor_init(max6675_sensor_t *sensor,
     sensor->rl_mode = rl_mode;
     sensor->valid = false;
     sensor->last_update_us = 0;
+    sensor->last_status = MAX6675_STATUS_INVALID_ARG;
     return ESP_OK;
 }
 
@@ -166,6 +174,7 @@ esp_err_t max6675_sensor_read(max6675_sensor_t *sensor,
 
     int64_t now = esp_timer_get_time();
 
+    /* If cached and still within interval, ONLY return cache if last result was OK */
     if (sensor->valid && sensor->min_interval_ms > 0) {
         int64_t elapsed_ms = (now - sensor->last_update_us) / 1000;
         if (elapsed_ms < sensor->min_interval_ms) {
@@ -174,34 +183,44 @@ esp_err_t max6675_sensor_read(max6675_sensor_t *sensor,
             }
 
             *celsius = sensor->last_celsius;
-            if (status) *status = MAX6675_STATUS_OK;
+            if (status) *status = sensor->last_status;   // <-- do not force OK
             if (is_fresh) *is_fresh = false;
             return ESP_OK;
         }
     }
 
     uint16_t raw;
-    max6675_status_t st;
+    max6675_status_t st = MAX6675_STATUS_SPI_ERROR;
 
     esp_err_t ret = read_raw(sensor->dev, &raw, &st);
     if (ret != ESP_OK) {
-        if (status) *status = st;
-        return ret;
+        sensor->valid = false;
+        sensor->last_status = MAX6675_STATUS_SPI_ERROR;
+        *celsius = NAN;
+        if (status) *status = sensor->last_status;
+        if (is_fresh) *is_fresh = true;
+        return ESP_OK;  // keep app simple: status carries the meaning
     }
 
-    if (st == MAX6675_STATUS_OPEN_THERMOCOUPLE) {
+    sensor->last_status = st;
+
+    if (st != MAX6675_STATUS_OK) {
         sensor->valid = false;
         *celsius = NAN;
-    } else {
-        sensor->last_raw = raw;
-        sensor->last_celsius = (float)(raw >> 3) * 0.25f;
-        sensor->last_update_us = now;
-        sensor->valid = true;
-        *celsius = sensor->last_celsius;
+        if (status) *status = st;
+        if (is_fresh) *is_fresh = true;
+        return ESP_OK;
     }
 
-    if (status) *status = st;
+    sensor->last_raw = raw;
+    sensor->last_celsius = (float)(raw >> 3) * 0.25f;
+    sensor->last_update_us = now;
+    sensor->valid = true;
+
+    *celsius = sensor->last_celsius;
+    if (status) *status = MAX6675_STATUS_OK;
     if (is_fresh) *is_fresh = true;
 
     return ESP_OK;
 }
+
